@@ -139,18 +139,40 @@ function loadModelConfig() {
   }
 
   logger.info('模型类型:', modelTypes);
-  logger.debug('模型映射:', modelMapping);
+  logger.debug('模型映射:', JSON.stringify(modelMapping));
 }
 
 function getModelId(modelType) {
-  return modelMapping[modelType] || modelType;
+  const mapping = modelMapping[modelType];
+  if (!mapping) {
+    return modelType;
+  }
+  // 支持数组格式
+  if (Array.isArray(mapping)) {
+    return mapping[Math.floor(Math.random() * mapping.length)];
+  }
+  // 支持逗号分隔的字符串格式
+  if (typeof mapping === 'string' && mapping.includes(',')) {
+    const ids = mapping.split(',').map(id => id.trim());
+    return ids[Math.floor(Math.random() * ids.length)];
+  }
+  return mapping;
 }
 
 function getModelTypeFromRequest(model) {
   // 检查是否是映射后的 model id
-  for (const [type, id] of Object.entries(modelMapping)) {
-    if (id === model) {
-      return type;
+  for (const [type, ids] of Object.entries(modelMapping)) {
+    // 支持数组格式
+    if (Array.isArray(ids)) {
+      if (ids.includes(model)) {
+        return type;
+      }
+    } else if (typeof ids === 'string') {
+      // 支持逗号分隔的字符串格式
+      const idList = ids.split(',').map(id => id.trim());
+      if (idList.includes(model)) {
+        return type;
+      }
     }
   }
   // 如果没有映射，直接使用 model 作为 model_type
@@ -700,11 +722,18 @@ function updateAuthCache(authData) {
 
 function getAvailableAccounts() {
   // 获取可用账号（排除失败的账号）
-  return accounts.filter(acc => {
+  const available = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
-    // 没有缓存或者缓存不是失败状态
-    return !cached?.failed;
+    // 排除已标记为失败的账号
+    // 如果没有缓存，或者缓存中 failed 不是 true，则认为可用
+    const isAvailable = !cached || cached.failed !== true;
+    if (!isAvailable) {
+      logger.debug(`账号 ${acc.email} 已被排除 (failed: ${cached?.failed})`);
+    }
+    return isAvailable;
   });
+  logger.debug(`可用账号数量: ${available.length}/${accounts.length}`);
+  return available;
 }
 
 function getAccountStats() {
@@ -721,10 +750,10 @@ function getAccountIndex(email) {
 }
 
 async function ensureAuth(email = null) {
-  // 没有配置账号时返回 null
+  // 没有配置账号时返回错误信息
   if (accounts.length === 0) {
     logger.warn('没有配置账号');
-    return null;
+    return { authData: null, error: '未配置 DeepSeek 账号，请设置环境变量 DEEPSEEK_ACCOUNTS' };
   }
 
   // 如果指定了邮箱，使用指定账号
@@ -732,9 +761,9 @@ async function ensureAuth(email = null) {
     const account = accounts.find(a => a.email === email);
     if (account) {
       const cached = getAuthByEmail(email);
-      if (cached?.authorization && !cached.failed) {
+      if (cached?.authorization && cached.failed !== true) {
         logger.debug(`使用指定账号缓存认证: ${email}`);
-        return cached;
+        return { authData: cached, error: null };
       }
       // 需要重新登录
       return await loginAndCache(account);
@@ -744,25 +773,36 @@ async function ensureAuth(email = null) {
   // 获取所有已有有效 authorization 的账号
   const validCachedAccounts = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
-    return cached?.authorization && !cached.failed;
+    const isValid = cached?.authorization && cached.failed !== true;
+    logger.debug(`账号 ${acc.email}: authorization=${!!cached?.authorization}, failed=${cached?.failed}, isValid=${isValid}`);
+    return isValid;
   });
+
+  logger.debug(`有效缓存账号数量: ${validCachedAccounts.length}`);
 
   // 如果有有效缓存的账号，随机选择一个
   if (validCachedAccounts.length > 0) {
     const randomAccount = validCachedAccounts[Math.floor(Math.random() * validCachedAccounts.length)];
     const cached = getAuthByEmail(randomAccount.email);
-    logger.debug(`随机使用缓存认证: ${cached.email}`);
-    return cached;
+    logger.info(`随机使用缓存认证: ${cached.email}`);
+    return { authData: cached, error: null };
   }
 
   // 没有有效缓存，从可用账号中随机选择并登录
   const availableAccounts = getAvailableAccounts();
   if (availableAccounts.length === 0) {
+    // 所有账号都已失效，收集错误信息
+    const failedAccounts = authCache.filter(a => a.failed);
+    const errorDetails = failedAccounts.map(a => `${a.email}: ${a.error}`).join('; ');
     logger.warn('所有账号都已失效，请检查账号配置');
-    return null;
+    return { 
+      authData: null, 
+      error: `所有 DeepSeek 账号都已失效 (${errorDetails})` 
+    };
   }
   
   const account = availableAccounts[Math.floor(Math.random() * availableAccounts.length)];
+  logger.info(`选择账号尝试登录: ${account.email}`);
   return await loginAndCache(account);
 }
 
@@ -782,7 +822,7 @@ async function loginAndCache(account) {
     };
     updateAuthCache(authData);
     logger.info(`账号 ${account.email} 登录成功!`);
-    return authData;
+    return { authData, error: null };
   } else {
     // 保存失败状态
     const authData = {
@@ -803,7 +843,10 @@ async function loginAndCache(account) {
       return ensureAuth();
     }
     
-    return null;
+    return { 
+      authData: null, 
+      error: `账号 ${account.email} 登录失败: ${result.error}` 
+    };
   }
 }
 
@@ -968,11 +1011,11 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   const displayModelId = getModelId(modelType);
 
   // 获取认证
-  const authData = await ensureAuth();
+  const { authData, error } = await ensureAuth();
   if (!authData?.authorization) {
     return res.status(401).json({
       error: {
-        message: 'Authentication failed',
+        message: error || 'Authentication failed',
         type: 'authentication_error',
         code: 'auth_failed'
       }
@@ -1155,13 +1198,53 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
 });
 
 app.get('/v1/models', authenticateApiKey, (req, res) => {
-  const models = modelTypes.map(type => ({
-    id: getModelId(type),
-    object: 'model',
-    created: 1677610602,
-    owned_by: 'deepseek',
-    description: `DeepSeek ${type} model`
-  }));
+  const models = [];
+  
+  for (const type of modelTypes) {
+    const mapping = modelMapping[type];
+    if (!mapping) {
+      // 没有映射，直接使用 type 作为 id
+      models.push({
+        id: type,
+        object: 'model',
+        created: 1677610602,
+        owned_by: 'deepseek',
+        description: `DeepSeek ${type} model`
+      });
+    } else if (Array.isArray(mapping)) {
+      // 数组格式，显示所有映射
+      for (const id of mapping) {
+        models.push({
+          id: id,
+          object: 'model',
+          created: 1677610602,
+          owned_by: 'deepseek',
+          description: `DeepSeek ${type} model`
+        });
+      }
+    } else if (typeof mapping === 'string' && mapping.includes(',')) {
+      // 逗号分隔格式，显示所有映射
+      const ids = mapping.split(',').map(id => id.trim());
+      for (const id of ids) {
+        models.push({
+          id: id,
+          object: 'model',
+          created: 1677610602,
+          owned_by: 'deepseek',
+          description: `DeepSeek ${type} model`
+        });
+      }
+    } else {
+      // 单个映射
+      models.push({
+        id: mapping,
+        object: 'model',
+        created: 1677610602,
+        owned_by: 'deepseek',
+        description: `DeepSeek ${type} model`
+      });
+    }
+  }
   
   res.json({
     object: 'list',

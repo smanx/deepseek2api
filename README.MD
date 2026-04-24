@@ -49,7 +49,10 @@ DEEPSEEK_PASSWORD=your_password
 DEEPSEEK_MODEL_TYPES=["default","expert"]
 
 # 模型映射配置（可选）
+# 单个映射
 DEEPSEEK_MODEL_MAPPING={"default":"deepseek-v4-flash","expert":"deepseek-v4-pro"}
+# 或多个映射（逗号分隔，随机选择）
+DEEPSEEK_MODEL_MAPPING={"default":"deepseek-v4-flash,gpt-5.4","expert":"deepseek-v4-pro"}
 ```
 
 ### 启动服务

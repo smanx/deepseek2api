@@ -52,7 +52,10 @@ DEEPSEEK_PASSWORD=your_password
 DEEPSEEK_MODEL_TYPES=["default","expert"]
 
 # 配置 model_type 到 model id 的映射（只有配置了才生效）
+# 单个映射
 DEEPSEEK_MODEL_MAPPING={"default":"deepseek-v4-flash","expert":"deepseek-v4-pro"}
+# 或多个映射（逗号分隔，随机选择）
+DEEPSEEK_MODEL_MAPPING={"default":"deepseek-v4-flash,gpt-5.4","expert":"deepseek-v4-pro"}
 ```
 
 **默认配置：**
@@ -63,6 +66,7 @@ DEEPSEEK_MODEL_MAPPING={"default":"deepseek-v4-flash","expert":"deepseek-v4-pro"
 - 当请求的 `model` 参数匹配映射中的 model id 时，会使用对应的 `model_type`
 - 当请求的 `model` 参数没有映射时，直接作为 `model_type` 使用
 - 响应中的 `model` 字段会显示映射后的 model id（如果配置了映射）
+- 支持同一个 model_type 映射到多个 model id（逗号分隔），请求时随机选择一个
 
 ## API 端点
 
