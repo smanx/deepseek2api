@@ -449,7 +449,7 @@ function handleOpObjForContent(obj) {
   
   // 格式1: {"v":"text"} - 纯文本增量
   if (obj.v && typeof obj.v === "string" && !obj.p) {
-    if (activeType === 'REASONING') {
+    if (activeType === 'THINK') {
       reasoningContent += obj.v;
     } else if (activeType === 'RESPONSE') {
       responseContent += obj.v;
@@ -465,7 +465,7 @@ function handleOpObjForContent(obj) {
         const fragType = frag?.type;
         if (fragType) activeType = fragType;
         if (typeof frag?.content === "string") {
-          if (fragType === 'REASONING') {
+          if (fragType === 'THINK') {
             reasoningContent += frag.content;
           } else {
             responseContent += frag.content;
@@ -494,7 +494,7 @@ function handleOpObjForContent(obj) {
       const fragType = frag?.type;
       if (fragType) activeType = fragType;
       if (typeof frag?.content === "string") {
-        if (fragType === 'REASONING') {
+        if (fragType === 'THINK') {
           reasoningContent += frag.content;
         } else {
           responseContent += frag.content;
@@ -507,7 +507,7 @@ function handleOpObjForContent(obj) {
   // 格式5: {"p":"response/fragments/-1/content","o":"APPEND","v":"text"}
   if (p === "response/fragments/-1/content" && typeof v === "string") {
     if (!activeType) activeType = "RESPONSE";
-    if (activeType === 'REASONING') {
+    if (activeType === 'THINK') {
       reasoningContent += v;
     } else {
       responseContent += v;
@@ -650,7 +650,7 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model, inclu
             const tokens = parseStreamTokens(data);
 
             for (const token of tokens) {
-              const isReasoning = token.type === 'REASONING';
+              const isReasoning = token.type === 'THINK';
               const delta = firstChunk 
                 ? { role: 'assistant', content: token.content }
                 : { content: token.content };
