@@ -51,6 +51,68 @@ const LOGIN_URL = 'https://chat.deepseek.com/api/v0/users/login';
 const POW_CHALLENGE_URL = 'https://chat.deepseek.com/api/v0/chat/create_pow_challenge';
 const CACHE_FILE = './.auth-cache.json';
 
+// API Key 配置
+let apiKeys = [];
+
+function loadApiKeys() {
+  const keysStr = process.env.API_KEYS;
+  if (keysStr) {
+    try {
+      apiKeys = JSON.parse(keysStr);
+      if (!Array.isArray(apiKeys)) {
+        apiKeys = [apiKeys];
+      }
+      // 过滤空值并标准化
+      apiKeys = apiKeys.filter(k => k && typeof k === 'string').map(k => k.trim());
+    } catch (e) {
+      // 尝试逗号分隔格式
+      apiKeys = keysStr.split(',').map(k => k.trim()).filter(k => k);
+    }
+  }
+  
+  if (apiKeys.length > 0) {
+    logger.info(`已配置 ${apiKeys.length} 个 API Key`);
+  } else {
+    logger.info('未配置 API Key，跳过验证');
+  }
+}
+
+// API Key 验证中间件
+function authenticateApiKey(req, res, next) {
+  // 没有配置 API Key 时跳过验证
+  if (apiKeys.length === 0) {
+    return next();
+  }
+
+  const authHeader = req.headers['authorization'] || '';
+  const apiKey = authHeader.startsWith('Bearer ') 
+    ? authHeader.slice(7).trim() 
+    : req.headers['x-api-key']?.trim();
+
+  if (!apiKey) {
+    return res.status(401).json({
+      error: {
+        message: 'Missing API key. Please provide Authorization: Bearer <key> or X-API-Key header.',
+        type: 'invalid_request_error',
+        code: 'missing_api_key'
+      }
+    });
+  }
+
+  if (!apiKeys.includes(apiKey)) {
+    logger.warn(`无效的 API Key 尝试: ${apiKey.slice(0, 8)}...`);
+    return res.status(401).json({
+      error: {
+        message: 'Invalid API key',
+        type: 'invalid_request_error',
+        code: 'invalid_api_key'
+      }
+    });
+  }
+
+  next();
+}
+
 // 模型类型配置
 let modelTypes = ['default', 'expert'];
 let modelMapping = {};
@@ -829,7 +891,7 @@ async function getPowChallengeAndSolve(authorization) {
   return null;
 }
 
-app.post('/v1/chat/completions', async (req, res) => {
+app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   const { messages, model, stream, temperature, max_tokens, ...extraParams } = req.body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -1027,7 +1089,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-app.get('/v1/models', (req, res) => {
+app.get('/v1/models', authenticateApiKey, (req, res) => {
   const models = modelTypes.map(type => ({
     id: getModelId(type),
     object: 'model',
@@ -1043,16 +1105,15 @@ app.get('/v1/models', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  const validAuths = authCache.filter(a => a.authorization);
+  const validAuths = authCache.filter(a => a.authorization && !a.failed);
+  const failedAuths = authCache.filter(a => a.failed);
   res.json({
     status: 'ok',
-    accounts_configured: accounts.length,
-    accounts_cached: validAuths.length,
-    accounts: validAuths.map(a => ({
-      email: a.email,
-      has_token: !!a.authorization,
-      has_pow: !!a['x-ds-pow-response']
-    }))
+    accounts: {
+      total: accounts.length,
+      available: validAuths.length,
+      failed: failedAuths.length
+    }
   });
 });
 
@@ -1066,6 +1127,7 @@ function generateUUID() {
 
 async function startServer() {
   loadModelConfig();
+  loadApiKeys();
   loadAccounts();
   
   // 清除旧的认证缓存，重新验证所有账号

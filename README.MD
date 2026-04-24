@@ -8,6 +8,7 @@
 - ✅ 支持流式响应 (SSE)
 - ✅ 支持多轮对话（自动保持上下文）
 - ✅ 支持多账号配置与随机负载均衡
+- ✅ 支持 OpenAI 兼容的 API Key 验证
 - ✅ 自动 POW 验证
 - ✅ 可配置模型映射
 - ✅ 可配置日志等级
@@ -27,6 +28,14 @@ npm install
 ```env
 # 服务端口（默认 3002）
 PORT=3002
+
+# 日志等级 (ERROR/WARN/INFO/DEBUG)
+LOG_LEVEL=INFO
+
+# API Key 验证（可选，不配置则跳过验证）
+API_KEYS=["sk-key1","sk-key2"]
+# 或逗号分隔
+API_KEYS=sk-key1,sk-key2
 
 # 账号配置（二选一）
 DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
@@ -119,6 +128,7 @@ docker-compose up -d
 ```bash
 curl -X POST http://localhost:3002/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
   -d '{
     "model": "default",
     "messages": [
@@ -132,6 +142,7 @@ curl -X POST http://localhost:3002/v1/chat/completions \
 ```bash
 curl -X POST http://localhost:3002/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
   -d '{
     "model": "default",
     "messages": [
@@ -141,6 +152,8 @@ curl -X POST http://localhost:3002/v1/chat/completions \
   }'
 ```
 
+> 如果未配置 `API_KEYS`，则不需要 `Authorization` 头。
+
 ### 使用 OpenAI SDK
 
 ```javascript
@@ -148,7 +161,7 @@ import OpenAI from 'openai';
 
 const client = new OpenAI({
   baseURL: 'http://localhost:3002/v1',
-  apiKey: 'not-needed' // 此服务不需要 API Key
+  apiKey: 'sk-your-api-key' // 如果未配置 API_KEYS，可设为任意值
 });
 
 const response = await client.chat.completions.create({
@@ -175,6 +188,7 @@ for await (const chunk of response) {
 |--------|------|--------|
 | `PORT` | 服务端口 | `3002` |
 | `LOG_LEVEL` | 日志等级 (ERROR/WARN/INFO/DEBUG) | `INFO` |
+| `API_KEYS` | API Key 列表 (JSON 数组或逗号分隔) | 无（跳过验证） |
 | `DEEPSEEK_ACCOUNTS` | 账号列表 (JSON 格式) | 无 |
 | `DEEPSEEK_EMAIL` | 单个账号邮箱 | 无 |
 | `DEEPSEEK_PASSWORD` | 单个账号密码 | 无 |

@@ -23,10 +23,12 @@ npm run dev
 ```
 PORT=3002
 LOG_LEVEL=INFO
+API_KEYS=["sk-key1","sk-key2"]
 ```
 
 > 默认端口: 3002
 > 日志等级: ERROR, WARN, INFO, DEBUG (默认 INFO)
+> API Key: 可选，支持 JSON 数组或逗号分隔格式，不配置则跳过验证
 
 ### 账号配置
 
