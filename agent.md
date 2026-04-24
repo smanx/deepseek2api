@@ -101,6 +101,130 @@ LOG_LEVEL=DEBUG npm run dev
 
 ---
 
+## 思考模式
+
+服务支持 OpenAI 兼容的思考模式参数，启用后模型会先输出思考过程（`reasoning_content`），再输出最终回答（`content`）。
+
+### 支持的参数
+
+| 参数 | 格式 | 说明 |
+|------|------|------|
+| `reasoning_effort` | `"low"`, `"medium"`, `"high"`, `"max"` | 思考强度，设置后自动启用思考模式 |
+| `thinking` | `{"type": "enabled"}` 或 `{"type": "disabled"}` | 思考模式开关 |
+
+### 参数解析逻辑
+
+```javascript
+// 优先级：thinking.type > reasoning_effort > thinking_enabled
+
+// 1. 检查 thinking.type 参数
+if (thinking && thinking.type === 'enabled') {
+  thinkingEnabled = true;
+}
+
+// 2. 检查 reasoning_effort 参数（设置后自动启用）
+if (reasoning_effort) {
+  thinkingEnabled = true;
+}
+```
+
+### 响应格式
+
+**非流式响应：**
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "最终回答",
+      "reasoning_content": "思考过程"
+    }
+  }]
+}
+```
+
+**流式响应：**
+```json
+{
+  "choices": [{
+    "delta": {
+      "content": "",
+      "reasoning_content": "思考内容片段"
+    }
+  }]
+}
+```
+
+### 测试请求
+
+```bash
+# 使用 reasoning_effort 参数
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"解释相对论"}],"reasoning_effort":"high"}'
+
+# 使用 thinking 参数
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"解释相对论"}],"thinking":{"type":"enabled"}}'
+```
+
+---
+
+## 搜索模式
+
+服务支持 OpenAI 兼容的网络搜索参数，启用后模型可以搜索网络获取最新信息。
+
+### 支持的参数
+
+| 参数 | 格式 | 说明 |
+|------|------|------|
+| `web_search_options` | `{}` 或详细配置 | OpenAI Chat Completions API 的搜索选项 |
+| `tools` | `[{"type": "web_search"}]` | OpenAI Responses API 的搜索工具 |
+
+### 参数解析逻辑
+
+```javascript
+// 默认启用搜索
+let searchEnabled = true;
+
+// 支持 web_search_options 参数
+if (web_search_options !== undefined) {
+  searchEnabled = true;
+}
+
+// 支持 tools 中的 web_search 类型
+if (tools && Array.isArray(tools)) {
+  const hasWebSearch = tools.some(tool => 
+    tool && (tool.type === 'web_search' || tool.type === 'web_search_preview')
+  );
+  if (hasWebSearch) {
+    searchEnabled = true;
+  }
+}
+```
+
+### 测试请求
+
+```bash
+# 使用 web_search_options 参数
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"今天新闻"}],"web_search_options":{}}'
+
+# 使用 tools 参数
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"今天新闻"}],"tools":[{"type":"web_search"}]}'
+
+# 组合使用思考和搜索
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"分析AI发展趋势"}],"reasoning_effort":"high","web_search_options":{}}'
+```
+
+---
+
 ## POW 验证机制
 
 ### 工作流程

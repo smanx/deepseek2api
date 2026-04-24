@@ -401,9 +401,10 @@ async function solvePowChallenge(challengeData, salt, difficulty, targetPath) {
 }
 
 let activeType = null;
+let reasoningContent = '';
+let responseContent = '';
 
 function extractContentFromSSE(sseData) {
-  let content = '';
   const lines = sseData.split('\n');
 
   for (const line of lines) {
@@ -413,27 +414,25 @@ function extractContentFromSSE(sseData) {
 
       try {
         const data = JSON.parse(dataStr);
-        content += handleOpObj(data);
+        handleOpObjForContent(data);
       } catch (e) {
         // 忽略解析错误
       }
     }
   }
-
-  return content;
 }
 
-function handleOpObj(obj) {
-  if (!obj || typeof obj !== "object") return '';
-  
-  let content = '';
+function handleOpObjForContent(obj) {
+  if (!obj || typeof obj !== "object") return;
   
   // 格式1: {"v":"text"} - 纯文本增量
   if (obj.v && typeof obj.v === "string" && !obj.p) {
-    if (activeType) {
-      content += obj.v;
+    if (activeType === 'REASONING') {
+      reasoningContent += obj.v;
+    } else if (activeType === 'RESPONSE') {
+      responseContent += obj.v;
     }
-    return content;
+    return;
   }
   
   // 格式2: {"v":{"response":{"fragments":[...]}}}
@@ -444,11 +443,15 @@ function handleOpObj(obj) {
         const fragType = frag?.type;
         if (fragType) activeType = fragType;
         if (typeof frag?.content === "string") {
-          content += frag.content;
+          if (fragType === 'REASONING') {
+            reasoningContent += frag.content;
+          } else {
+            responseContent += frag.content;
+          }
         }
       }
     }
-    return content;
+    return;
   }
   
   const p = obj.p;
@@ -458,9 +461,9 @@ function handleOpObj(obj) {
   // 格式3: {"p":"response","o":"BATCH","v":[...]}
   if (p === "response" && o === "BATCH" && Array.isArray(v)) {
     for (const item of v) {
-      content += handleOpObj(item);
+      handleOpObjForContent(item);
     }
-    return content;
+    return;
   }
   
   // 格式4: {"p":"fragments","o":"APPEND","v":[...]}
@@ -469,20 +472,26 @@ function handleOpObj(obj) {
       const fragType = frag?.type;
       if (fragType) activeType = fragType;
       if (typeof frag?.content === "string") {
-        content += frag.content;
+        if (fragType === 'REASONING') {
+          reasoningContent += frag.content;
+        } else {
+          responseContent += frag.content;
+        }
       }
     }
-    return content;
+    return;
   }
   
   // 格式5: {"p":"response/fragments/-1/content","o":"APPEND","v":"text"}
   if (p === "response/fragments/-1/content" && typeof v === "string") {
     if (!activeType) activeType = "RESPONSE";
-    content += v;
-    return content;
+    if (activeType === 'REASONING') {
+      reasoningContent += v;
+    } else {
+      responseContent += v;
+    }
+    return;
   }
-  
-  return content;
 }
 
 function parseStreamTokens(obj) {
@@ -492,7 +501,7 @@ function parseStreamTokens(obj) {
   // 格式1: {"v":"text"} - 纯文本增量
   if (obj.v && typeof obj.v === "string" && !obj.p) {
     if (activeType) {
-      tokens.push(obj.v);
+      tokens.push({ content: obj.v, type: activeType });
     }
     return tokens;
   }
@@ -505,7 +514,7 @@ function parseStreamTokens(obj) {
         const fragType = frag?.type;
         if (fragType) activeType = fragType;
         if (typeof frag?.content === "string") {
-          tokens.push(frag.content);
+          tokens.push({ content: frag.content, type: fragType || activeType });
         }
       }
     }
@@ -530,7 +539,7 @@ function parseStreamTokens(obj) {
       const fragType = frag?.type;
       if (fragType) activeType = fragType;
       if (typeof frag?.content === "string") {
-        tokens.push(frag.content);
+        tokens.push({ content: frag.content, type: fragType || activeType });
       }
     }
     return tokens;
@@ -539,7 +548,7 @@ function parseStreamTokens(obj) {
   // 格式5: {"p":"response/fragments/-1/content","o":"APPEND","v":"text"}
   if (p === "response/fragments/-1/content" && typeof v === "string") {
     if (!activeType) activeType = "RESPONSE";
-    tokens.push(v);
+    tokens.push({ content: v, type: activeType });
     return tokens;
   }
   
@@ -554,7 +563,8 @@ async function makeDeepSeekRequest(requestBody, headers) {
   });
 
   activeType = null;
-  let fullContent = '';
+  reasoningContent = '';
+  responseContent = '';
   const startTime = Date.now();
   let rawData = '';
 
@@ -562,17 +572,17 @@ async function makeDeepSeekRequest(requestBody, headers) {
     response.data.on('data', (chunk) => {
       const chunkStr = chunk.toString();
       rawData += chunkStr;
-      fullContent += extractContentFromSSE(chunkStr);
+      extractContentFromSSE(chunkStr);
     });
 
     response.data.on('end', resolve);
     response.data.on('error', reject);
   });
 
-  return { fullContent, startTime, rawData };
+  return { reasoningContent, responseContent, startTime, rawData };
 }
 
-async function makeDeepSeekStreamRequest(requestBody, headers, res, model) {
+async function makeDeepSeekStreamRequest(requestBody, headers, res, model, includeReasoning) {
   const response = await axios.post(DEEPSEEK_API_URL, requestBody, {
     headers,
     responseType: 'stream',
@@ -618,6 +628,16 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model) {
             const tokens = parseStreamTokens(data);
 
             for (const token of tokens) {
+              const isReasoning = token.type === 'REASONING';
+              const delta = firstChunk 
+                ? { role: 'assistant', content: token.content }
+                : { content: token.content };
+              
+              if (includeReasoning && isReasoning) {
+                delta.reasoning_content = token.content;
+                delta.content = '';
+              }
+              
               const chunkData = {
                 id: `chatcmpl-${generateUUID()}`,
                 object: 'chat.completion.chunk',
@@ -625,7 +645,7 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model) {
                 model: model || 'deepseek-chat',
                 choices: [{
                   index: 0,
-                  delta: firstChunk ? { role: 'assistant', content: token } : { content: token },
+                  delta: delta,
                   finish_reason: null
                 }]
               };
@@ -892,7 +912,7 @@ async function getPowChallengeAndSolve(authorization) {
 }
 
 app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
-  const { messages, model, stream, temperature, max_tokens, ...extraParams } = req.body;
+  const { messages, model, stream, temperature, max_tokens, reasoning_effort, thinking, web_search_options, tools, ...extraParams } = req.body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({
@@ -903,6 +923,43 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
         code: 'missing_messages'
       }
     });
+  }
+
+  // 解析思考模式参数
+  // thinking 参数格式: {"type": "enabled"} 或 {"type": "disabled"}
+  // reasoning_effort 参数: low/medium/high/max
+  let thinkingEnabled = extraParams.thinking_enabled || false;
+  
+  // 支持 thinking.type 参数
+  if (thinking && typeof thinking === 'object') {
+    thinkingEnabled = thinking.type === 'enabled';
+  }
+  
+  // 支持 reasoning_effort 参数（如果有设置，则启用思考模式）
+  if (reasoning_effort) {
+    thinkingEnabled = true;
+  }
+  
+  const includeReasoning = thinkingEnabled;
+
+  // 解析搜索模式参数
+  // web_search_options: OpenAI Chat Completions API 的搜索选项
+  // tools: [{"type": "web_search"}] - OpenAI Responses API 的搜索工具
+  let searchEnabled = extraParams.search_enabled !== false;
+  
+  // 支持 web_search_options 参数
+  if (web_search_options !== undefined) {
+    searchEnabled = true;
+  }
+  
+  // 支持 tools 中的 web_search 类型
+  if (tools && Array.isArray(tools)) {
+    const hasWebSearch = tools.some(tool => 
+      tool && (tool.type === 'web_search' || tool.type === 'web_search_preview')
+    );
+    if (hasWebSearch) {
+      searchEnabled = true;
+    }
   }
 
   // 获取 model_type（从 model 参数解析）
@@ -953,8 +1010,8 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
     model_type: modelType,
     prompt: prompt,
     ref_file_ids: [],
-    thinking_enabled: extraParams.thinking_enabled || false,
-    search_enabled: extraParams.search_enabled !== false,
+    thinking_enabled: thinkingEnabled,
+    search_enabled: searchEnabled,
     preempt: false,
     temperature: temperature || 0.6,
     max_tokens: max_tokens || 1024,
@@ -988,7 +1045,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   try {
     // 流式请求使用专门的流式处理函数
     if (stream) {
-      const result = await makeDeepSeekStreamRequest(requestBody, headers, res, displayModelId);
+      const result = await makeDeepSeekStreamRequest(requestBody, headers, res, displayModelId, includeReasoning);
       
       if (result.hasError && !result.headersSent) {
         // POW错误，重新获取 POW 重试
@@ -996,7 +1053,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
         const newPowResponse = await getPowChallengeAndSolve(authData.authorization);
         if (newPowResponse) {
           headers['x-ds-pow-response'] = newPowResponse;
-          const retryResult = await makeDeepSeekStreamRequest(requestBody, headers, res, displayModelId);
+          const retryResult = await makeDeepSeekStreamRequest(requestBody, headers, res, displayModelId, includeReasoning);
           if (retryResult.hasError && !retryResult.headersSent) {
             // 重试失败，返回错误
             res.writeHead(400, {
@@ -1015,9 +1072,10 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
     }
 
     // 非流式请求
-    let { fullContent, startTime, rawData } = await makeDeepSeekRequest(requestBody, headers);
+    let { reasoningContent: rc, responseContent: cc, startTime, rawData } = await makeDeepSeekRequest(requestBody, headers);
     logger.debug('DeepSeek原始响应:', rawData.slice(0, 300));
-    logger.debug('提取的内容:', fullContent);
+    logger.debug('思考内容:', rc);
+    logger.debug('回答内容:', cc);
 
     if (rawData?.includes('INVALID_POW_RESPONSE')) {
       logger.warn('POW无效，重新获取...');
@@ -1028,7 +1086,8 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
           const retry = await makeDeepSeekRequest(requestBody, headers);
           logger.debug('重试响应:', retry.rawData.slice(0, 300));
           if (!retry.rawData?.includes('INVALID_POW_RESPONSE')) {
-            fullContent = retry.fullContent;
+            rc = retry.reasoningContent;
+            cc = retry.responseContent;
             rawData = retry.rawData;
           } else {
             logger.warn('重试后POW仍然无效');
@@ -1039,6 +1098,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
       }
     }
 
+    const fullContent = cc || rc;
     if (rawData?.includes('INVALID_POW_RESPONSE') || rawData?.includes('error') || fullContent === '') {
       logger.warn('API返回错误或内容为空，返回错误信息');
       const errorMessage = rawData?.includes('INVALID_POW_RESPONSE') ? 'POW验证失败' : 'DeepSeek API返回错误';
@@ -1048,6 +1108,11 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
       return;
     }
 
+    const message = { role: 'assistant', content: cc || '' };
+    if (includeReasoning && rc) {
+      message.reasoning_content = rc;
+    }
+
     const openAIResponse = {
       id: `chatcmpl-${generateUUID()}`,
       object: 'chat.completion',
@@ -1055,7 +1120,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
       model: displayModelId,
       choices: [{
         index: 0,
-        message: { role: 'assistant', content: fullContent },
+        message: message,
         finish_reason: 'stop'
       }],
       usage: {

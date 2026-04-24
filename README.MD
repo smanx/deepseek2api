@@ -9,6 +9,8 @@
 - ✅ 支持多轮对话（自动保持上下文）
 - ✅ 支持多账号配置与随机负载均衡
 - ✅ 支持 OpenAI 兼容的 API Key 验证
+- ✅ 支持 OpenAI 兼容的思考模式（reasoning_effort / thinking）
+- ✅ 支持 OpenAI 兼容的网络搜索（web_search_options / tools）
 - ✅ 自动 POW 验证
 - ✅ 可配置模型映射
 - ✅ 可配置日志等级
@@ -246,6 +248,138 @@ const messages = [
 **配置示例：**
 ```env
 DEEPSEEK_ACCOUNTS=[{"email":"user1@qq.com","password":"pass1"},{"email":"user2@qq.com","password":"pass2"}]
+```
+
+## 思考模式
+
+服务支持 OpenAI 兼容的思考模式参数，启用后模型会先输出思考过程，再输出最终回答。
+
+### 启用方式
+
+**方式一：使用 `reasoning_effort` 参数**
+
+```bash
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "解释相对论"}],
+    "reasoning_effort": "high"
+  }'
+```
+
+**方式二：使用 `thinking` 参数**
+
+```bash
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "解释相对论"}],
+    "thinking": {"type": "enabled"}
+  }'
+```
+
+### 参数说明
+
+| 参数 | 值 | 说明 |
+|------|---|------|
+| `reasoning_effort` | `low`, `medium`, `high`, `max` | 思考强度，设置后自动启用思考模式 |
+| `thinking.type` | `enabled`, `disabled` | 思考模式开关 |
+
+### 响应格式
+
+启用思考模式后，响应中会包含 `reasoning_content` 字段：
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "最终回答内容",
+      "reasoning_content": "思考过程内容"
+    },
+    "finish_reason": "stop"
+  }]
+}
+```
+
+### 流式响应
+
+流式模式下，思考内容通过 `delta.reasoning_content` 字段返回：
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion.chunk",
+  "choices": [{
+    "index": 0,
+    "delta": {
+      "content": "",
+      "reasoning_content": "思考内容片段"
+    }
+  }]
+}
+```
+
+## 搜索模式
+
+服务支持 OpenAI 兼容的网络搜索参数，启用后模型可以搜索网络获取最新信息。
+
+### 启用方式
+
+**方式一：使用 `web_search_options` 参数**
+
+```bash
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "今天新闻"}],
+    "web_search_options": {}
+  }'
+```
+
+**方式二：使用 `tools` 参数**
+
+```bash
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "今天新闻"}],
+    "tools": [{"type": "web_search"}]
+  }'
+```
+
+### 参数说明
+
+| 参数 | 格式 | 说明 |
+|------|------|------|
+| `web_search_options` | `{}` 或详细配置 | OpenAI Chat Completions API 的搜索选项 |
+| `tools` | `[{"type": "web_search"}]` | OpenAI Responses API 的搜索工具 |
+
+### 组合使用
+
+思考模式和搜索模式可以同时启用：
+
+```bash
+curl -X POST http://localhost:3002/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "分析最新的AI发展趋势"}],
+    "reasoning_effort": "high",
+    "web_search_options": {}
+  }'
 ```
 
 ## License
