@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+.env
+.auth-cache.json
+*.log
+.git
+.gitignore
+README.md
+agent.md
+tasks

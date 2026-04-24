@@ -1,0 +1,7 @@
+node_modules/
+.env
+.auth-cache.json
+*.log
+debug-screenshot.png
+error-screenshot.png
+captured-auth.json
