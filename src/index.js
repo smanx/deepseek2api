@@ -227,19 +227,20 @@ let authCache = [];
 async function loadAccounts() {
   let accountsStr = process.env.DEEPSEEK_ACCOUNTS;
   
-  // 如果配置了远程 URL，先从远程获取账号配置
-  const accountsUrl = process.env.DEEPSEEK_ACCOUNTS_URL;
-  if (accountsUrl) {
-    try {
-      logger.info(`从远程获取账号配置: ${accountsUrl}`);
-      const response = await axios.get(accountsUrl, { timeout: 10000 });
-      if (response.data) {
-        accountsStr = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        logger.info('远程账号配置获取成功');
+  // 优先使用本地配置，如果没有本地配置则使用远程 URL
+  if (!accountsStr) {
+    const accountsUrl = process.env.DEEPSEEK_ACCOUNTS_URL;
+    if (accountsUrl) {
+      try {
+        logger.info(`从远程获取账号配置: ${accountsUrl}`);
+        const response = await axios.get(accountsUrl, { timeout: 10000 });
+        if (response.data) {
+          accountsStr = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+          logger.info('远程账号配置获取成功');
+        }
+      } catch (error) {
+        logger.error(`远程获取账号配置失败: ${error.message}`);
       }
-    } catch (error) {
-      logger.error(`远程获取账号配置失败: ${error.message}`);
-      // 远程获取失败时使用本地配置
     }
   }
   
