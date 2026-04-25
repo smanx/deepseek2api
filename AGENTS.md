@@ -34,13 +34,10 @@ API_KEYS=["sk-key1","sk-key2"]
 
 ```
 DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
-```
-
-或者：
-
-```
-DEEPSEEK_EMAIL=your_email
-DEEPSEEK_PASSWORD=your_password
+# 或密码为空时，使用账号作为密码
+DEEPSEEK_ACCOUNTS=[{"email":"your_email"}]
+# 或使用逗号分隔格式
+DEEPSEEK_ACCOUNTS=email1:password1,email2
 ```
 
 > 如果没有配置账号，服务会启动但请求会返回认证错误。

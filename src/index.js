@@ -233,16 +233,19 @@ function loadAccounts() {
       const pairs = accountsStr.split(',');
       accounts = pairs.map(p => {
         const [email, password] = p.split(':');
-        return { email: email?.trim(), password: password?.trim() };
+        const trimmedEmail = email?.trim();
+        // 密码为空时，使用账号作为密码
+        const trimmedPassword = password?.trim() || trimmedEmail;
+        return { email: trimmedEmail, password: trimmedPassword };
       });
     }
   }
 
-  const email = process.env.DEEPSEEK_EMAIL;
-  const password = process.env.DEEPSEEK_PASSWORD;
-  if (email && password && accounts.length === 0) {
-    accounts.push({ email, password });
-  }
+  // 处理密码为空的情况
+  accounts = accounts.map(acc => ({
+    email: acc.email,
+    password: acc.password || acc.email
+  }));
 
   logger.info(`加载了 ${accounts.length} 个账号`);
   return accounts.length > 0;
@@ -1289,7 +1292,7 @@ async function startServer() {
   await loadWasmModule();
 
   if (accounts.length === 0) {
-    logger.warn('未配置账号，请设置环境变量 DEEPSEEK_ACCOUNTS 或 DEEPSEEK_EMAIL/DEEPSEEK_PASSWORD');
+    logger.warn('未配置账号，请设置环境变量 DEEPSEEK_ACCOUNTS');
     logger.warn('服务将启动，但请求会返回认证错误');
   } else {
     logger.info(`配置了 ${accounts.length} 个账号，正在验证...`);

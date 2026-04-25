@@ -39,11 +39,12 @@ API_KEYS=["sk-key1","sk-key2"]
 # 或逗号分隔
 API_KEYS=sk-key1,sk-key2
 
-# 账号配置（二选一）
+# 账号配置
 DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
-# 或
-DEEPSEEK_EMAIL=your_email
-DEEPSEEK_PASSWORD=your_password
+# 或密码为空时，使用账号作为密码
+DEEPSEEK_ACCOUNTS=[{"email":"your_email"}]
+# 或使用逗号分隔格式
+DEEPSEEK_ACCOUNTS=email1:password1,email2
 
 # 模型类型配置（可选）
 DEEPSEEK_MODEL_TYPES=["default","expert"]
@@ -194,9 +195,7 @@ for await (const chunk of response) {
 | `PORT` | 服务端口 | `3002` |
 | `LOG_LEVEL` | 日志等级 (ERROR/WARN/INFO/DEBUG) | `INFO` |
 | `API_KEYS` | API Key 列表 (JSON 数组或逗号分隔) | 无（跳过验证） |
-| `DEEPSEEK_ACCOUNTS` | 账号列表 (JSON 格式) | 无 |
-| `DEEPSEEK_EMAIL` | 单个账号邮箱 | 无 |
-| `DEEPSEEK_PASSWORD` | 单个账号密码 | 无 |
+| `DEEPSEEK_ACCOUNTS` | 账号列表 (JSON 数组或逗号分隔) | 无 |
 | `DEEPSEEK_MODEL_TYPES` | 可用模型类型列表 | `["default", "expert"]` |
 | `DEEPSEEK_MODEL_MAPPING` | 模型类型到模型 ID 的映射 | `{}` |
 
