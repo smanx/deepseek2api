@@ -43,11 +43,11 @@ API_KEYS=sk-key1,sk-key2
 DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
 # 或密码为空时，使用账号作为密码
 DEEPSEEK_ACCOUNTS=[{"email":"your_email"}]
-# 或使用逗号分隔格式
-DEEPSEEK_ACCOUNTS=email1:password1,email2
+# 或使用逗号分隔格式（账号密码用 | 分隔）
+DEEPSEEK_ACCOUNTS=user1|pass1,user2
 # 或使用换行分隔格式
-DEEPSEEK_ACCOUNTS=email1:password1
-email2
+DEEPSEEK_ACCOUNTS=user1|pass1
+user2
 
 # 模型类型配置（可选）
 DEEPSEEK_MODEL_TYPES=["default","expert"]

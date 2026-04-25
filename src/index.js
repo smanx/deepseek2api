@@ -230,10 +230,10 @@ function loadAccounts() {
     try {
       accounts = JSON.parse(accountsStr);
     } catch (e) {
-      // 支持逗号或换行符分隔
+      // 支持逗号或换行符分隔，账号密码用 | 分隔
       const pairs = accountsStr.split(/[,\n]/);
       accounts = pairs.map(p => {
-        const [email, password] = p.split(':');
+        const [email, password] = p.split('|');
         const trimmedEmail = email?.trim();
         // 密码为空时，使用账号作为密码
         const trimmedPassword = password?.trim() || trimmedEmail;
