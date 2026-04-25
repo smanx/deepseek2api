@@ -38,6 +38,9 @@ DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
 DEEPSEEK_ACCOUNTS=[{"email":"your_email"}]
 # 或使用逗号分隔格式
 DEEPSEEK_ACCOUNTS=email1:password1,email2
+# 或使用换行分隔格式
+DEEPSEEK_ACCOUNTS=email1:password1
+email2
 ```
 
 > 如果没有配置账号，服务会启动但请求会返回认证错误。
