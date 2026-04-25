@@ -45,6 +45,9 @@ DEEPSEEK_ACCOUNTS=[{"email":"your_email","password":"your_password"}]
 DEEPSEEK_ACCOUNTS=[{"email":"your_email"}]
 # 或使用逗号分隔格式
 DEEPSEEK_ACCOUNTS=email1:password1,email2
+# 或使用换行分隔格式
+DEEPSEEK_ACCOUNTS=email1:password1
+email2
 
 # 模型类型配置（可选）
 DEEPSEEK_MODEL_TYPES=["default","expert"]
@@ -195,7 +198,7 @@ for await (const chunk of response) {
 | `PORT` | 服务端口 | `3002` |
 | `LOG_LEVEL` | 日志等级 (ERROR/WARN/INFO/DEBUG) | `INFO` |
 | `API_KEYS` | API Key 列表 (JSON 数组或逗号分隔) | 无（跳过验证） |
-| `DEEPSEEK_ACCOUNTS` | 账号列表 (JSON 数组或逗号分隔) | 无 |
+| `DEEPSEEK_ACCOUNTS` | 账号列表 (JSON数组/逗号分隔/换行分隔) | 无 |
 | `DEEPSEEK_MODEL_TYPES` | 可用模型类型列表 | `["default", "expert"]` |
 | `DEEPSEEK_MODEL_MAPPING` | 模型类型到模型 ID 的映射 | `{}` |
 
