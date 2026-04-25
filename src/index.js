@@ -43,7 +43,7 @@ async function loadWasmModule() {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
 
 const PORT = process.env.PORT || 3002;
 const DEEPSEEK_API_URL = 'https://chat.deepseek.com/api/v0/chat/completion';
