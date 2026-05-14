@@ -368,7 +368,11 @@ async function login(email, password) {
         return {
           success: false,
           email: email,
-          error: '账号已被封禁'
+          error: '账号已被封禁',
+          isBanned: true,
+          mute_until: bannedCheck.muteUntil,
+          authorization: token, // 保存token，虽然账号被封但缓存中可能需要
+          device_id: deviceId
         };
       }
 
@@ -385,7 +389,9 @@ async function login(email, password) {
     return {
       success: false,
       email: email,
-      error: errorMsg
+      error: errorMsg,
+      isBanned: false,
+      mute_until: null
     };
   } catch (error) {
     const errorMsg = error.response?.data?.msg || error.response?.data?.message || error.message;
@@ -393,7 +399,9 @@ async function login(email, password) {
     return {
       success: false,
       email: email,
-      error: errorMsg
+      error: errorMsg,
+      isBanned: false,
+      mute_until: null
     };
   }
 }
@@ -797,14 +805,14 @@ function updateAuthCache(authData) {
 }
 
 function getAvailableAccounts() {
-  // 获取可用账号（排除失败的账号）
+  // 获取可用账号（排除失败的账号和被封禁的账号）
   const available = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
     // 排除已标记为失败的账号
-    // 如果没有缓存，或者缓存中 failed 不是 true，则认为可用
-    const isAvailable = !cached || cached.failed !== true;
+    // 如果没有缓存，或者缓存中 failed 不是 true，并且 isBanned 不是 true，则认为可用
+    const isAvailable = !cached || (cached.failed !== true && cached.isBanned !== true);
     if (!isAvailable) {
-      logger.debug(`账号 ${maskEmail(acc.email)} 已被排除 (failed: ${cached?.failed})`);
+      logger.debug(`账号 ${maskEmail(acc.email)} 已被排除 (failed: ${cached?.failed}, isBanned: ${cached?.isBanned})`);
     }
     return isAvailable;
   });
@@ -816,7 +824,7 @@ function getAccountStats() {
   const total = accounts.length;
   const successCount = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
-    return cached?.authorization && !cached?.failed;
+    return cached?.authorization && !cached?.failed && !cached?.isBanned;
   }).length;
   return { total, successCount };
 }
@@ -837,7 +845,7 @@ async function ensureAuth(email = null) {
     const account = accounts.find(a => a.email === email);
     if (account) {
       const cached = getAuthByEmail(email);
-      if (cached?.authorization && cached.failed !== true) {
+      if (cached?.authorization && cached.failed !== true && cached.isBanned !== true) {
         logger.debug(`使用指定账号缓存认证: ${maskEmail(email)}`);
         return { authData: cached, error: null };
       }
@@ -849,8 +857,8 @@ async function ensureAuth(email = null) {
   // 获取所有已有有效 authorization 的账号
   const validCachedAccounts = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
-    const isValid = cached?.authorization && cached.failed !== true;
-    logger.debug(`账号 ${maskEmail(acc.email)}: authorization=${!!cached?.authorization}, failed=${cached?.failed}, isValid=${isValid}`);
+    const isValid = cached?.authorization && cached.failed !== true && cached.isBanned !== true;
+    logger.debug(`账号 ${maskEmail(acc.email)}: authorization=${!!cached?.authorization}, failed=${cached?.failed}, isBanned=${cached?.isBanned}, isValid=${isValid}`);
     return isValid;
   });
 
@@ -895,7 +903,9 @@ async function loginAndCache(account) {
       timestamp: Date.now(),
       failed: false,
       error: null,
-      failure_type: null
+      failure_type: null,
+      isBanned: false,
+      mute_until: null
     };
     updateAuthCache(authData);
     logger.info(`账号 ${maskEmail(account.email)} 登录成功!`);
@@ -904,12 +914,14 @@ async function loginAndCache(account) {
     // 保存失败状态
     const authData = {
       email: account.email,
-      authorization: null,
-      device_id: null,
+      authorization: result.authorization || null,
+      device_id: result.device_id || null,
       timestamp: Date.now(),
       failed: true,
       error: result.error,
-      failure_type: 'login_failed'
+      failure_type: result.isBanned ? 'banned' : 'login_failed',
+      isBanned: result.isBanned || false,
+      mute_until: result.mute_until || null
     };
     updateAuthCache(authData);
     logger.warn(`账号 ${maskEmail(account.email)} 登录失败: ${result.error}`);
@@ -1189,6 +1201,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
               authDataToUpdate.failed = true;
               authDataToUpdate.error = '账号已被封禁';
               authDataToUpdate.failure_type = 'banned';
+              authDataToUpdate.isBanned = true;
               authDataToUpdate.mute_until = bannedCheck.muteUntil;
               updateAuthCache(authDataToUpdate);
             }
@@ -1288,15 +1301,16 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
       logger.warn(`API返回内容为空，检查账号 ${maskEmail(authData.email)} 是否被封...`);
       const bannedCheck = await checkAccountBanned(authData.authorization, authData.email);
       if (bannedCheck.banned) {
-        // 标记账号为失败
-        const authDataToUpdate = getAuthByEmail(authData.email);
-        if (authDataToUpdate) {
-          authDataToUpdate.failed = true;
-          authDataToUpdate.error = '账号已被封禁';
-          authDataToUpdate.failure_type = 'banned';
-          authDataToUpdate.mute_until = bannedCheck.muteUntil;
-          updateAuthCache(authDataToUpdate);
-        }
+          // 标记账号为失败
+          const authDataToUpdate = getAuthByEmail(authData.email);
+          if (authDataToUpdate) {
+            authDataToUpdate.failed = true;
+            authDataToUpdate.error = '账号已被封禁';
+            authDataToUpdate.failure_type = 'banned';
+            authDataToUpdate.isBanned = true;
+            authDataToUpdate.mute_until = bannedCheck.muteUntil;
+            updateAuthCache(authDataToUpdate);
+          }
         
         // 尝试其他可用账号重试
         logger.warn(`账号 ${maskEmail(authData.email)} 已被封禁，尝试使用其他账号重试...`);
@@ -1467,35 +1481,80 @@ app.get('/v1/models', authenticateApiKey, (req, res) => {
   });
 });
 
-app.get('/health', (req, res) => {
+function getAccountHealthData(includeDetails = false) {
   const validAuths = authCache.filter(a => a.authorization && !a.failed);
   const failedAuths = authCache.filter(a => a.failed);
   
   const loginFailedAccounts = failedAuths.filter(a => a.failure_type === 'login_failed');
-  const bannedAccounts = failedAuths.filter(a => a.failure_type === 'banned');
+  const bannedAccounts = failedAuths.filter(a => a.isBanned === true);
   
-  const accountDetails = accounts.map(acc => {
-    const cached = getAuthByEmail(acc.email);
-    return {
-      email: maskEmail(acc.email),
-      status: !cached ? 'unknown' : 
-              !cached.failed ? 'available' : 
-              cached.failure_type === 'banned' ? 'banned' : 'login_failed',
-      mute_until: cached?.mute_until || null,
-      error: cached?.error || null
-    };
-  });
-  
-  res.json({
+  const result = {
     status: 'ok',
     accounts: {
       total: accounts.length,
       available: validAuths.length,
       login_failed: loginFailedAccounts.length,
-      banned: bannedAccounts.length,
-      details: accountDetails
+      banned: bannedAccounts.length
     }
-  });
+  };
+  
+  if (includeDetails) {
+    const accountDetails = accounts.map(acc => {
+      const cached = getAuthByEmail(acc.email);
+      let status;
+      if (!cached) {
+        status = 'unknown';
+      } else if (cached.failed) {
+        if (cached.isBanned) {
+          status = 'banned';
+        } else {
+          status = 'login_failed';
+        }
+      } else {
+        status = 'available';
+      }
+      
+      let mute_until_beijing = null;
+      if (cached?.mute_until) {
+        const muteUntilMs = Number(cached.mute_until) * 1000;
+        if (!isNaN(muteUntilMs) && muteUntilMs > 0) {
+          // 转换为北京时间 (UTC+8)
+          const date = new Date(muteUntilMs);
+          mute_until_beijing = date.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+          }).replace(/\//g, '-');
+        }
+      }
+      
+      return {
+        email: maskEmail(acc.email),
+        status: status,
+        isBanned: cached?.isBanned || false,
+        mute_until: cached?.mute_until || null,
+        mute_until_beijing: mute_until_beijing,
+        error: cached?.error || null
+      };
+    });
+    
+    result.accounts.details = accountDetails;
+  }
+  
+  return result;
+}
+
+app.get('/health', (req, res) => {
+  res.json(getAccountHealthData(false));
+});
+
+app.get('/health/detail', (req, res) => {
+  res.json(getAccountHealthData(true));
 });
 
 function generateUUID() {
@@ -1553,22 +1612,64 @@ function maskEmail(email) {
 }
 
 async function checkUnbanAccounts() {
-  logger.info('开始检查账号解封状态...');
+  logger.info('开始检查账号状态...');
   
   for (const acc of accounts) {
     const cached = getAuthByEmail(acc.email);
-    if (!cached?.failed || !cached?.mute_until) {
-      continue;
-    }
-
-    // 检查是否过了解封时间
-    const now = Date.now();
-    const muteUntilMs = cached.mute_until * 1000; // 假设是Unix时间戳，秒转毫秒
     
-    if (now > muteUntilMs) {
-      logger.info(`账号 ${maskEmail(acc.email)} 可能已解封，尝试重新验证...`);
+    if (cached?.isBanned) {
+      // 处理已封禁的账号
+      if (cached.mute_until) {
+        const now = Date.now();
+        const muteUntilMs = Number(cached.mute_until) * 1000; // 安全转换
+        
+        // 验证时间戳有效性
+        if (!isNaN(muteUntilMs) && muteUntilMs > 0) {
+          if (now > muteUntilMs) {
+            logger.info(`账号 ${maskEmail(acc.email)} 可能已解封，尝试重新验证...`);
+            
+            // 尝试重新登录
+            const result = await login(acc.email, acc.password);
+            
+            if (result.success) {
+              // 登录成功，更新状态
+              const authData = {
+                email: acc.email,
+                authorization: result.authorization,
+                device_id: result.device_id,
+                timestamp: Date.now(),
+                failed: false,
+                error: null,
+                failure_type: null,
+                isBanned: false,
+                mute_until: null
+              };
+              updateAuthCache(authData);
+              logger.info(`账号 ${maskEmail(acc.email)} 已成功解封并重新登录！`);
+            } else {
+              logger.warn(`账号 ${maskEmail(acc.email)} 尝试重新登录失败: ${result.error}`);
+              // 保留失败状态
+              const authData = {
+                ...cached,
+                timestamp: Date.now()
+              };
+              updateAuthCache(authData);
+            }
+          } else {
+            // 还没到解封时间
+            const remaining = Math.ceil((muteUntilMs - now) / 1000 / 60 / 60);
+            logger.info(`账号 ${maskEmail(acc.email)} 还需 ${remaining} 小时解封`);
+          }
+        } else {
+          logger.warn(`账号 ${maskEmail(acc.email)} 解封时间无效，视为永久封禁`);
+        }
+      } else {
+        logger.warn(`账号 ${maskEmail(acc.email)} 无解封时间，视为永久封禁`);
+      }
+    } else if (cached?.failed && cached?.error === 'TOO_MANY_REQUESTS') {
+      // 处理 TOO_MANY_REQUESTS 错误的账号
+      logger.info(`账号 ${maskEmail(acc.email)} 之前请求过多，尝试重新登录...`);
       
-      // 尝试重新登录
       const result = await login(acc.email, acc.password);
       
       if (result.success) {
@@ -1581,27 +1682,45 @@ async function checkUnbanAccounts() {
           failed: false,
           error: null,
           failure_type: null,
+          isBanned: false,
           mute_until: null
         };
         updateAuthCache(authData);
-        logger.info(`账号 ${maskEmail(acc.email)} 已成功解封并重新登录！`);
+        logger.info(`账号 ${maskEmail(acc.email)} 已成功重新登录！`);
       } else {
         logger.warn(`账号 ${maskEmail(acc.email)} 尝试重新登录失败: ${result.error}`);
         // 保留失败状态
         const authData = {
           ...cached,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          error: result.error,
+          failure_type: result.isBanned ? 'banned' : 'login_failed',
+          isBanned: result.isBanned || false,
+          mute_until: result.mute_until || null
         };
         updateAuthCache(authData);
       }
-    } else {
-      // 还没到解封时间
-      const remaining = Math.ceil((muteUntilMs - now) / 1000 / 60 / 60);
-      logger.info(`账号 ${maskEmail(acc.email)} 还需 ${remaining} 小时解封`);
+    } else if (cached?.authorization && !cached?.failed) {
+      // 主动检查正常账号是否被封禁
+      logger.debug(`检查正常账号 ${maskEmail(acc.email)} 状态...`);
+      const bannedCheck = await checkAccountBanned(cached.authorization, acc.email);
+      if (bannedCheck.banned) {
+        const authData = {
+          ...cached,
+          timestamp: Date.now(),
+          failed: true,
+          error: '账号已被封禁',
+          failure_type: 'banned',
+          isBanned: true,
+          mute_until: bannedCheck.muteUntil
+        };
+        updateAuthCache(authData);
+        logger.warn(`检测到账号 ${maskEmail(acc.email)} 新被封禁！`);
+      }
     }
   }
   
-  logger.info('账号解封检查完成');
+  logger.info('账号检查完成');
 }
 
 function startUnbanCheckTimer() {
@@ -1654,19 +1773,23 @@ async function startServer() {
             timestamp: Date.now(),
             failed: false,
             error: null,
-            failure_type: null
+            failure_type: null,
+            isBanned: false,
+            mute_until: null
           };
           updateAuthCache(authData);
           logger.info(`账号 ${maskEmail(acc.email)} 验证成功!`);
         } else {
           const authData = {
             email: acc.email,
-            authorization: null,
-            device_id: null,
+            authorization: result.authorization || null,
+            device_id: result.device_id || null,
             timestamp: Date.now(),
             failed: true,
             error: result.error,
-            failure_type: 'login_failed'
+            failure_type: result.isBanned ? 'banned' : 'login_failed',
+            isBanned: result.isBanned || false,
+            mute_until: result.mute_until || null
           };
           updateAuthCache(authData);
           logger.warn(`账号 ${maskEmail(acc.email)} 验证失败: ${result.error}`);
@@ -1684,6 +1807,7 @@ async function startServer() {
             failed: true,
             error: '账号已被封禁',
             failure_type: 'banned',
+            isBanned: true,
             mute_until: bannedCheck.muteUntil
           };
           updateAuthCache(authData);
