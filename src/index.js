@@ -296,11 +296,42 @@ function generateDeviceId() {
   return result + '==';
 }
 
+async function checkAccountBanned(authorization, email) {
+  try {
+    const response = await axios.get('https://chat.deepseek.com/api/v0/users/current', {
+      headers: {
+        'Host': 'chat.deepseek.com',
+        'User-Agent': 'DeepSeek/1.0.13 Android/35',
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'x-client-platform': 'android',
+        'x-client-version': '2.0.13',
+        'x-client-locale': 'zh_CN',
+        'accept-charset': 'UTF-8',
+        'authorization': `Bearer ${authorization}`
+      }
+    });
+
+    const isMuted = response.data?.data?.biz_data?.chat?.is_muted === 1;
+    const muteUntil = response.data?.data?.biz_data?.chat?.mute_until;
+    
+    if (isMuted) {
+      logger.warn(`账号 ${maskEmail(email)} 已被封禁 (is_muted: 1, mute_until: ${muteUntil})`);
+      return { banned: true, muteUntil };
+    }
+    
+    return { banned: false };
+  } catch (error) {
+    logger.error(`检查账号 ${maskEmail(email)} 状态失败:`, error.message);
+    return { banned: false, error: error.message };
+  }
+}
+
 async function login(email, password) {
   try {
     const deviceId = generateDeviceId();
 
-    logger.info(`正在登录 ${email}...`);
+    logger.info(`正在登录 ${maskEmail(email)}...`);
 
     const response = await axios.post(LOGIN_URL, {
       email: email,
@@ -323,17 +354,27 @@ async function login(email, password) {
       }
     });
 
+    let token = null;
     if (response.data?.data?.biz_data?.user?.token) {
-      return {
-        success: true,
-        authorization: response.data.data.biz_data.user.token,
-        device_id: deviceId,
-        email: email
-      };
+      token = response.data.data.biz_data.user.token;
     } else if (response.data?.data?.biz_data?.token) {
+      token = response.data.data.biz_data.token;
+    }
+
+    if (token) {
+      // 登录成功后立即检查账号是否被封
+      const bannedCheck = await checkAccountBanned(token, email);
+      if (bannedCheck.banned) {
+        return {
+          success: false,
+          email: email,
+          error: '账号已被封禁'
+        };
+      }
+
       return {
         success: true,
-        authorization: response.data.data.biz_data.token,
+        authorization: token,
         device_id: deviceId,
         email: email
       };
@@ -348,7 +389,7 @@ async function login(email, password) {
     };
   } catch (error) {
     const errorMsg = error.response?.data?.msg || error.response?.data?.message || error.message;
-    logger.error(`登录 ${email} 失败:`, errorMsg);
+    logger.error(`登录 ${maskEmail(email)} 失败:`, errorMsg);
     return {
       success: false,
       email: email,
@@ -638,6 +679,7 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model, inclu
   let firstChunk = true;
   let rawData = '';
   let headersSent = false;
+  let hasContent = false;
 
   return new Promise((resolve, reject) => {
     response.data.on('data', (chunk) => {
@@ -670,6 +712,13 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model, inclu
           try {
             const data = JSON.parse(dataStr);
             const tokens = parseStreamTokens(data);
+            
+            // 检查是否有实际内容
+            for (const token of tokens) {
+              if (token.content && token.content.trim() !== '') {
+                hasContent = true;
+              }
+            }
 
             for (const token of tokens) {
               const isReasoning = token.type === 'THINK';
@@ -715,8 +764,13 @@ async function makeDeepSeekStreamRequest(requestBody, headers, res, model, inclu
         res.write(`data: ${JSON.stringify(finishData)}\n\n`);
         res.write('data: [DONE]\n\n');
         res.end();
+        resolve({ rawData, hasError: false, headersSent });
+      } else if (!hasContent) {
+        // 如果没有发送任何内容，标记为有错误
+        resolve({ rawData, hasError: true, headersSent: false });
+      } else {
+        resolve({ rawData, hasError: false, headersSent });
       }
-      resolve({ rawData, hasError: false, headersSent });
     });
 
     response.data.on('error', (err) => {
@@ -750,7 +804,7 @@ function getAvailableAccounts() {
     // 如果没有缓存，或者缓存中 failed 不是 true，则认为可用
     const isAvailable = !cached || cached.failed !== true;
     if (!isAvailable) {
-      logger.debug(`账号 ${acc.email} 已被排除 (failed: ${cached?.failed})`);
+      logger.debug(`账号 ${maskEmail(acc.email)} 已被排除 (failed: ${cached?.failed})`);
     }
     return isAvailable;
   });
@@ -784,7 +838,7 @@ async function ensureAuth(email = null) {
     if (account) {
       const cached = getAuthByEmail(email);
       if (cached?.authorization && cached.failed !== true) {
-        logger.debug(`使用指定账号缓存认证: ${email}`);
+        logger.debug(`使用指定账号缓存认证: ${maskEmail(email)}`);
         return { authData: cached, error: null };
       }
       // 需要重新登录
@@ -796,7 +850,7 @@ async function ensureAuth(email = null) {
   const validCachedAccounts = accounts.filter(acc => {
     const cached = getAuthByEmail(acc.email);
     const isValid = cached?.authorization && cached.failed !== true;
-    logger.debug(`账号 ${acc.email}: authorization=${!!cached?.authorization}, failed=${cached?.failed}, isValid=${isValid}`);
+    logger.debug(`账号 ${maskEmail(acc.email)}: authorization=${!!cached?.authorization}, failed=${cached?.failed}, isValid=${isValid}`);
     return isValid;
   });
 
@@ -806,7 +860,7 @@ async function ensureAuth(email = null) {
   if (validCachedAccounts.length > 0) {
     const randomAccount = validCachedAccounts[Math.floor(Math.random() * validCachedAccounts.length)];
     const cached = getAuthByEmail(randomAccount.email);
-    logger.info(`随机使用缓存认证: ${cached.email}`);
+    logger.info(`随机使用缓存认证: ${maskEmail(cached.email)}`);
     return { authData: cached, error: null };
   }
 
@@ -815,7 +869,7 @@ async function ensureAuth(email = null) {
   if (availableAccounts.length === 0) {
     // 所有账号都已失效，收集错误信息
     const failedAccounts = authCache.filter(a => a.failed);
-    const errorDetails = failedAccounts.map(a => `${a.email}: ${a.error}`).join('; ');
+    const errorDetails = failedAccounts.map(a => `${maskEmail(a.email)}: ${a.error}`).join('; ');
     logger.warn('所有账号都已失效，请检查账号配置');
     return { 
       authData: null, 
@@ -824,12 +878,12 @@ async function ensureAuth(email = null) {
   }
   
   const account = availableAccounts[Math.floor(Math.random() * availableAccounts.length)];
-  logger.info(`选择账号尝试登录: ${account.email}`);
+  logger.info(`选择账号尝试登录: ${maskEmail(account.email)}`);
   return await loginAndCache(account);
 }
 
 async function loginAndCache(account) {
-  logger.info(`使用账号: ${account.email}`);
+  logger.info(`使用账号: ${maskEmail(account.email)}`);
 
   const result = await login(account.email, account.password);
   
@@ -840,10 +894,11 @@ async function loginAndCache(account) {
       device_id: result.device_id,
       timestamp: Date.now(),
       failed: false,
-      error: null
+      error: null,
+      failure_type: null
     };
     updateAuthCache(authData);
-    logger.info(`账号 ${account.email} 登录成功!`);
+    logger.info(`账号 ${maskEmail(account.email)} 登录成功!`);
     return { authData, error: null };
   } else {
     // 保存失败状态
@@ -853,10 +908,11 @@ async function loginAndCache(account) {
       device_id: null,
       timestamp: Date.now(),
       failed: true,
-      error: result.error
+      error: result.error,
+      failure_type: 'login_failed'
     };
     updateAuthCache(authData);
-    logger.warn(`账号 ${account.email} 登录失败: ${result.error}`);
+    logger.warn(`账号 ${maskEmail(account.email)} 登录失败: ${result.error}`);
     
     // 尝试其他可用账号
     const otherAvailable = getAvailableAccounts();
@@ -874,7 +930,7 @@ async function loginAndCache(account) {
 
 async function createChatSession(authorization, email) {
   try {
-    logger.debug(`创建会话请求... (账号: ${email})`);
+    logger.debug(`创建会话请求... (账号: ${maskEmail(email)})`);
     const response = await axios({
       method: 'POST',
       url: 'https://chat.deepseek.com/api/v0/chat_session/create',
@@ -908,13 +964,13 @@ async function createChatSession(authorization, email) {
     }
     
     if (sessionId) {
-      logger.info(`会话创建成功: ${sessionId} (账号: ${email})`);
+      logger.info(`会话创建成功: ${sessionId} (账号: ${maskEmail(email)})`);
       return sessionId;
     }
-    logger.warn(`会话创建失败: 响应格式不正确 (账号: ${email})`);
+    logger.warn(`会话创建失败: 响应格式不正确 (账号: ${maskEmail(email)})`);
     return null;
   } catch (error) {
-    logger.error(`创建会话失败 (账号: ${email}):`, error.message);
+    logger.error(`创建会话失败 (账号: ${maskEmail(email)}):`, error.message);
     if (error.response) {
       logger.debug('响应数据:', JSON.stringify(error.response.data, null, 2));
     }
@@ -1045,12 +1101,12 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   }
 
   // 设置账号信息响应头
-  const stats = getAccountStats();
-  const accountIndex = getAccountIndex(authData.email);
-  res.setHeader('X-Account-Total', stats.total);
-  res.setHeader('X-Account-Success', stats.successCount);
-  res.setHeader('X-Account-Index', accountIndex >= 0 ? accountIndex : -1);
-  res.setHeader('X-Account-Id', authData.email);
+    const stats = getAccountStats();
+    const accountIndex = getAccountIndex(authData.email);
+    res.setHeader('X-Account-Total', stats.total);
+    res.setHeader('X-Account-Success', stats.successCount);
+    res.setHeader('X-Account-Index', accountIndex >= 0 ? accountIndex : -1);
+    res.setHeader('X-Account-Id', maskEmail(authData.email));
 
   // 创建新的聊天会话
   const chatSessionId = await createChatSession(authData.authorization, authData.email);
@@ -1110,9 +1166,71 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   try {
     // 流式请求使用专门的流式处理函数
     if (stream) {
+      // 创建一个包装函数，用于记录响应内容
+      let streamContent = '';
+      let streamReasoningContent = '';
+      const originalMakeDeepSeekStreamRequest = makeDeepSeekStreamRequest;
+      
+      // 重写 makeDeepSeekStreamRequest 以捕获内容，但这里我们用另一种方式
+      // 我们先正常发送请求，然后在响应结束后检查
       const result = await makeDeepSeekStreamRequest(requestBody, headers, res, displayModelId, includeReasoning);
       
+      // 如果有错误但尚未发送响应头
       if (result.hasError && !result.headersSent) {
+        // 检查是否是内容为空导致的，可能是账号被封
+        if (result.rawData && !result.rawData.includes('INVALID_POW_RESPONSE') && !result.rawData.includes('error')) {
+          // 检查账号是否被封
+          logger.warn(`流式请求响应异常，检查账号 ${maskEmail(authData.email)} 是否被封...`);
+          const bannedCheck = await checkAccountBanned(authData.authorization, authData.email);
+          if (bannedCheck.banned) {
+            // 标记账号为失败
+            const authDataToUpdate = getAuthByEmail(authData.email);
+            if (authDataToUpdate) {
+              authDataToUpdate.failed = true;
+              authDataToUpdate.error = '账号已被封禁';
+              authDataToUpdate.failure_type = 'banned';
+              authDataToUpdate.mute_until = bannedCheck.muteUntil;
+              updateAuthCache(authDataToUpdate);
+            }
+            
+            // 尝试其他账号重试
+            logger.warn(`账号 ${maskEmail(authData.email)} 已被封禁，尝试使用其他账号重试流式请求...`);
+            const { authData: newAuthData, error: newError } = await ensureAuth();
+            if (newAuthData?.authorization && newAuthData.email !== authData.email) {
+              // 创建新会话
+              const newChatSessionId = await createChatSession(newAuthData.authorization, newAuthData.email);
+              if (newChatSessionId) {
+                // 更新请求体
+                requestBody.chat_session_id = newChatSessionId;
+                
+                // 获取新的POW
+                const newPowResponse = await getPowChallengeAndSolve(newAuthData.authorization);
+                
+                // 更新请求头
+                const newHeaders = {
+                  ...headers,
+                  'authorization': `Bearer ${newAuthData.authorization}`,
+                  'x-ds-pow-response': newPowResponse || ''
+                };
+                
+                // 更新响应头
+            const newStats = getAccountStats();
+            const newAccountIndex = getAccountIndex(newAuthData.email);
+            res.setHeader('X-Account-Total', newStats.total);
+            res.setHeader('X-Account-Success', newStats.successCount);
+            res.setHeader('X-Account-Index', newAccountIndex >= 0 ? newAccountIndex : -1);
+            res.setHeader('X-Account-Id', maskEmail(newAuthData.email));
+                
+                // 重试
+                const retryResult = await makeDeepSeekStreamRequest(requestBody, newHeaders, res, displayModelId, includeReasoning);
+                if (!retryResult.hasError || retryResult.headersSent) {
+                  return;
+                }
+              }
+            }
+          }
+        }
+        
         // POW错误，重新获取 POW 重试
         logger.warn('流式请求POW无效，重新获取...');
         const newPowResponse = await getPowChallengeAndSolve(authData.authorization);
@@ -1165,6 +1283,81 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
 
     const fullContent = cc || rc;
     if (rawData?.includes('INVALID_POW_RESPONSE') || rawData?.includes('error') || fullContent === '') {
+      // 如果内容为空，检查账号是否被封
+    if (fullContent === '' && !rawData?.includes('INVALID_POW_RESPONSE') && !rawData?.includes('error')) {
+      logger.warn(`API返回内容为空，检查账号 ${maskEmail(authData.email)} 是否被封...`);
+      const bannedCheck = await checkAccountBanned(authData.authorization, authData.email);
+      if (bannedCheck.banned) {
+        // 标记账号为失败
+        const authDataToUpdate = getAuthByEmail(authData.email);
+        if (authDataToUpdate) {
+          authDataToUpdate.failed = true;
+          authDataToUpdate.error = '账号已被封禁';
+          authDataToUpdate.failure_type = 'banned';
+          authDataToUpdate.mute_until = bannedCheck.muteUntil;
+          updateAuthCache(authDataToUpdate);
+        }
+        
+        // 尝试其他可用账号重试
+        logger.warn(`账号 ${maskEmail(authData.email)} 已被封禁，尝试使用其他账号重试...`);
+          const { authData: newAuthData, error: newError } = await ensureAuth();
+          if (newAuthData?.authorization && newAuthData.email !== authData.email) {
+            // 创建新会话
+            const newChatSessionId = await createChatSession(newAuthData.authorization, newAuthData.email);
+            if (newChatSessionId) {
+              // 更新请求体中的会话ID
+              requestBody.chat_session_id = newChatSessionId;
+              
+              // 获取新的POW
+              const newPowResponse = await getPowChallengeAndSolve(newAuthData.authorization);
+              
+              // 更新请求头
+              const newHeaders = {
+                ...headers,
+                'authorization': `Bearer ${newAuthData.authorization}`,
+                'x-ds-pow-response': newPowResponse || ''
+              };
+              
+              // 更新响应头中的账号信息
+            const newStats = getAccountStats();
+            const newAccountIndex = getAccountIndex(newAuthData.email);
+            res.setHeader('X-Account-Total', newStats.total);
+            res.setHeader('X-Account-Success', newStats.successCount);
+            res.setHeader('X-Account-Index', newAccountIndex >= 0 ? newAccountIndex : -1);
+            res.setHeader('X-Account-Id', maskEmail(newAuthData.email));
+              
+              // 重新发送请求
+              const retry = await makeDeepSeekRequest(requestBody, newHeaders);
+              const newFullContent = retry.responseContent || retry.reasoningContent;
+              if (newFullContent) {
+                const newMessage = { role: 'assistant', content: retry.responseContent || '' };
+                if (includeReasoning && retry.reasoningContent) {
+                  newMessage.reasoning_content = retry.reasoningContent;
+                }
+                
+                const openAIResponse = {
+                  id: `chatcmpl-${generateUUID()}`,
+                  object: 'chat.completion',
+                  created: Math.floor(retry.startTime / 1000),
+                  model: displayModelId,
+                  choices: [{
+                    index: 0,
+                    message: newMessage,
+                    finish_reason: 'stop'
+                  }],
+                  usage: {
+                    prompt_tokens: Math.ceil(prompt.length / 4),
+                    completion_tokens: Math.ceil(newFullContent.length / 4),
+                    total_tokens: Math.ceil(prompt.length / 4) + Math.ceil(newFullContent.length / 4)
+                  }
+                };
+                return res.json(openAIResponse);
+              }
+            }
+          }
+        }
+      }
+      
       logger.warn('API返回错误或内容为空，返回错误信息');
       const errorMessage = rawData?.includes('INVALID_POW_RESPONSE') ? 'POW验证失败' : 'DeepSeek API返回错误';
       res.status(400).json({
@@ -1277,12 +1470,30 @@ app.get('/v1/models', authenticateApiKey, (req, res) => {
 app.get('/health', (req, res) => {
   const validAuths = authCache.filter(a => a.authorization && !a.failed);
   const failedAuths = authCache.filter(a => a.failed);
+  
+  const loginFailedAccounts = failedAuths.filter(a => a.failure_type === 'login_failed');
+  const bannedAccounts = failedAuths.filter(a => a.failure_type === 'banned');
+  
+  const accountDetails = accounts.map(acc => {
+    const cached = getAuthByEmail(acc.email);
+    return {
+      email: maskEmail(acc.email),
+      status: !cached ? 'unknown' : 
+              !cached.failed ? 'available' : 
+              cached.failure_type === 'banned' ? 'banned' : 'login_failed',
+      mute_until: cached?.mute_until || null,
+      error: cached?.error || null
+    };
+  });
+  
   res.json({
     status: 'ok',
     accounts: {
       total: accounts.length,
       available: validAuths.length,
-      failed: failedAuths.length
+      login_failed: loginFailedAccounts.length,
+      banned: bannedAccounts.length,
+      details: accountDetails
     }
   });
 });
@@ -1293,6 +1504,117 @@ function generateUUID() {
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+}
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') {
+    return email;
+  }
+  
+  const atIndex = email.indexOf('@');
+  if (atIndex === -1) {
+    // 不是email格式，原样返回
+    return email;
+  }
+  
+  let localPart = email.substring(0, atIndex);
+  const domainPart = email.substring(atIndex + 1); // 去掉@符号
+  
+  // 处理本地部分
+  let maskedLocal;
+  if (localPart.length <= 2) {
+    // 本地部分太短，只显示第一个字符
+    maskedLocal = localPart.charAt(0) + '***';
+  } else {
+    // 显示前2个字符，中间用***
+    maskedLocal = localPart.substring(0, 2) + '***';
+  }
+  
+  // 处理域名部分
+  let maskedDomain;
+  const dotIndex = domainPart.indexOf('.');
+  if (dotIndex === -1) {
+    // 没有点，只显示第一个字符
+    maskedDomain = domainPart.charAt(0) + '***';
+  } else {
+    const domainName = domainPart.substring(0, dotIndex);
+    const tld = domainPart.substring(dotIndex);
+    
+    if (domainName.length <= 2) {
+      // 域名太短，只显示第一个字符
+      maskedDomain = domainName.charAt(0) + '***' + tld;
+    } else {
+      // 显示前2个字符，中间用***
+      maskedDomain = domainName.substring(0, 2) + '***' + tld;
+    }
+  }
+  
+  return maskedLocal + '@' + maskedDomain;
+}
+
+async function checkUnbanAccounts() {
+  logger.info('开始检查账号解封状态...');
+  
+  for (const acc of accounts) {
+    const cached = getAuthByEmail(acc.email);
+    if (!cached?.failed || !cached?.mute_until) {
+      continue;
+    }
+
+    // 检查是否过了解封时间
+    const now = Date.now();
+    const muteUntilMs = cached.mute_until * 1000; // 假设是Unix时间戳，秒转毫秒
+    
+    if (now > muteUntilMs) {
+      logger.info(`账号 ${maskEmail(acc.email)} 可能已解封，尝试重新验证...`);
+      
+      // 尝试重新登录
+      const result = await login(acc.email, acc.password);
+      
+      if (result.success) {
+        // 登录成功，更新状态
+        const authData = {
+          email: acc.email,
+          authorization: result.authorization,
+          device_id: result.device_id,
+          timestamp: Date.now(),
+          failed: false,
+          error: null,
+          failure_type: null,
+          mute_until: null
+        };
+        updateAuthCache(authData);
+        logger.info(`账号 ${maskEmail(acc.email)} 已成功解封并重新登录！`);
+      } else {
+        logger.warn(`账号 ${maskEmail(acc.email)} 尝试重新登录失败: ${result.error}`);
+        // 保留失败状态
+        const authData = {
+          ...cached,
+          timestamp: Date.now()
+        };
+        updateAuthCache(authData);
+      }
+    } else {
+      // 还没到解封时间
+      const remaining = Math.ceil((muteUntilMs - now) / 1000 / 60 / 60);
+      logger.info(`账号 ${maskEmail(acc.email)} 还需 ${remaining} 小时解封`);
+    }
+  }
+  
+  logger.info('账号解封检查完成');
+}
+
+function startUnbanCheckTimer() {
+  // 立即执行一次
+  checkUnbanAccounts();
+  
+  // 每小时检查一次
+  const ONE_HOUR = 60 * 60 * 1000;
+  setInterval(() => {
+    checkUnbanAccounts();
+  }, ONE_HOUR);
+  
+  logger.info('定时任务已启动：每小时检查一次账号解封状态');
 }
 
 async function startServer() {
@@ -1321,7 +1643,7 @@ async function startServer() {
       const cached = getAuthByEmail(acc.email);
       // 如果缓存中没有有效认证，尝试登录
       if (!cached?.authorization || cached?.failed) {
-        logger.info(`验证账号: ${acc.email}`);
+        logger.info(`验证账号: ${maskEmail(acc.email)}`);
         const result = await login(acc.email, acc.password);
         
         if (result.success) {
@@ -1331,10 +1653,11 @@ async function startServer() {
             device_id: result.device_id,
             timestamp: Date.now(),
             failed: false,
-            error: null
+            error: null,
+            failure_type: null
           };
           updateAuthCache(authData);
-          logger.info(`账号 ${acc.email} 验证成功!`);
+          logger.info(`账号 ${maskEmail(acc.email)} 验证成功!`);
         } else {
           const authData = {
             email: acc.email,
@@ -1342,10 +1665,29 @@ async function startServer() {
             device_id: null,
             timestamp: Date.now(),
             failed: true,
-            error: result.error
+            error: result.error,
+            failure_type: 'login_failed'
           };
           updateAuthCache(authData);
-          logger.warn(`账号 ${acc.email} 验证失败: ${result.error}`);
+          logger.warn(`账号 ${maskEmail(acc.email)} 验证失败: ${result.error}`);
+        }
+      } else if (cached?.authorization) {
+        // 已有有效认证，检查是否被封
+        logger.info(`检查账号 ${maskEmail(acc.email)} 是否被封...`);
+        const bannedCheck = await checkAccountBanned(cached.authorization, acc.email);
+        if (bannedCheck.banned) {
+          const authData = {
+            email: acc.email,
+            authorization: cached.authorization,
+            device_id: cached.device_id,
+            timestamp: Date.now(),
+            failed: true,
+            error: '账号已被封禁',
+            failure_type: 'banned',
+            mute_until: bannedCheck.muteUntil
+          };
+          updateAuthCache(authData);
+          logger.warn(`账号 ${maskEmail(acc.email)} 已被封禁，标记为失败`);
         }
       }
     }
@@ -1356,12 +1698,12 @@ async function startServer() {
     accounts.forEach((a, i) => {
       const cached = getAuthByEmail(a.email);
       if (cached?.failed) {
-        logger.info(`  ${i + 1}. ${a.email} - ❌ 失败: ${cached.error}`);
+        logger.info(`  ${i + 1}. ${maskEmail(a.email)} - ❌ 失败: ${cached.error}`);
       } else if (cached?.authorization) {
-        logger.info(`  ${i + 1}. ${a.email} - ✓ 正常`);
+        logger.info(`  ${i + 1}. ${maskEmail(a.email)} - ✓ 正常`);
         successCount++;
       } else {
-        logger.info(`  ${i + 1}. ${a.email} - ? 未验证`);
+        logger.info(`  ${i + 1}. ${maskEmail(a.email)} - ? 未验证`);
       }
     });
 
@@ -1377,6 +1719,9 @@ async function startServer() {
     logger.info(`Chat: http://localhost:${PORT}/v1/chat/completions`);
     logger.info(`Models: http://localhost:${PORT}/v1/models`);
     logger.info(`Health: http://localhost:${PORT}/health`);
+    
+    // 启动定时任务检查账号解封
+    startUnbanCheckTimer();
   });
 }
 
