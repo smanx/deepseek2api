@@ -385,7 +385,7 @@ async function login(email, password) {
     }
     
     // 登录失败，返回错误信息
-    const errorMsg = response.data?.msg || response.data?.message || '未知错误';
+    const errorMsg = response.data?.msg || response.data?.data?.biz_msg  || response.data?.message || '未知错误';
     return {
       success: false,
       email: email,
